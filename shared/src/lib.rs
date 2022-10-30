@@ -6,6 +6,38 @@ use serde::{Deserialize, Serialize};
 pub const SPEED: f32 = 3.;
 pub const TICKRATE: u64 = 64;
 
+#[cfg(feature = "json")]
+pub fn serialize<T>(value: &T) -> anyhow::Result<Vec<u8>>
+where
+    T: ?Sized + Serialize,
+{
+    Ok(serde_json::to_vec(value)?)
+}
+
+#[cfg(feature = "binary")]
+pub fn serialize<T>(value: &T) -> anyhow::Result<Vec<u8>>
+where
+    T: ?Sized + Serialize,
+{
+    Ok(bincode::serialize(value)?)
+}
+
+#[cfg(feature = "json")]
+pub fn deserialize<'a, T>(v: &'a [u8]) -> anyhow::Result<T>
+where
+    T: serde::de::Deserialize<'a>,
+{
+    Ok(serde_json::from_slice::<T>(v)?)
+}
+
+#[cfg(feature = "binary")]
+pub fn deserialize<'a, T>(v: &'a [u8]) -> anyhow::Result<T>
+where
+    T: serde::de::Deserialize<'a>,
+{
+    Ok(bincode::deserialize(v)?)
+}
+
 #[derive(Deserialize, Serialize, Clone, Copy, Debug)]
 pub enum Direction {
     Up,

@@ -5,19 +5,18 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.66"
-macroquad = "0.3.24"
-log = "0.4"
-pretty_env_logger = "0.4"
-serde_json = "1.0"
-tungstenite = "0.17"
-glam = { version = "0.14", features = ["scalar-math", "serde"] }
-mio = { version = "0.8", features = ["net", "os-poll"] }
-futures = "0.3"
 async-recursion = "1.0"
-libc = "0.2"
-shared = { path = "shared" }
 clap = { version = "4.0.18", features = ["derive"] }
+futures = "0.3"
+glam = { version = "0.14", features = ["scalar-math", "serde"] }
 lazy_static = "1.4.0"
+libc = "0.2"
+log = "0.4"
+macroquad = "0.3.24"
+mio = { version = "0.8", features = ["net", "os-poll"] }
+pretty_env_logger = "0.4"
+shared = { path = "shared" }
+tungstenite = "0.17"
 
 [workspace]
 members = ["server", "shared"]

@@ -11,7 +11,10 @@ use macroquad::prelude::{
     is_key_down, next_frame, screen_height, screen_width, Color, DrawTextureParams, KeyCode, Rect,
     Texture2D, BLACK, WHITE,
 };
-use shared::{ClientMessage, Direction, RemoteState, ServerMessage, State, WelcomeMessage};
+use shared::{
+    deserialize, serialize, ClientMessage, Direction, RemoteState, ServerMessage, State,
+    WelcomeMessage,
+};
 use std::{io, sync::Arc};
 use ws::Connection;
 
@@ -148,7 +151,7 @@ pub async fn client_connect(connection: Arc<Connection>, url: String) {
 }
 
 pub fn client_send(msg: &ClientMessage, connection: &Arc<Connection>) {
-    let bytes = serde_json::to_vec(&msg).expect("serialization failed");
+    let bytes = serialize(&msg).expect("serialization failed");
     if let Err(err) = connection.send(bytes) {
         log::error!("Failed to send: {}", err);
         if let tungstenite::Error::Io(err) = err {
@@ -170,8 +173,7 @@ pub fn client_send(msg: &ClientMessage, connection: &Arc<Connection>) {
 
 pub fn client_receive(game: &mut Game, connection: &Arc<Connection>) {
     if let Some(msg) = connection.poll() {
-        let msg: ServerMessage =
-            serde_json::from_slice(msg.as_slice()).expect("deserialization failed");
+        let msg: ServerMessage = deserialize(msg.as_slice()).expect("deserialization failed");
         game.handle_message(msg);
     }
 }

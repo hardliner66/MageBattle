@@ -2,7 +2,8 @@
 
 use clap::Parser;
 use shared::{
-    ClientMessage, Direction, RemoteState, ServerMessage, WelcomeMessage, SPEED, TICKRATE,
+    deserialize, serialize, ClientMessage, Direction, RemoteState, ServerMessage, WelcomeMessage,
+    SPEED, TICKRATE,
 };
 use std::{
     collections::HashMap,
@@ -33,7 +34,7 @@ fn send_welcome(out: &OutBoundChannel, seed: u64) -> usize {
 }
 
 fn send_msg(tx: &OutBoundChannel, msg: &ServerMessage) {
-    let buffer = serde_json::to_vec(msg).unwrap();
+    let buffer = serialize(msg).unwrap();
     let msg = Message::binary(buffer);
     tx.send(Ok(msg)).unwrap();
 }
@@ -99,7 +100,7 @@ async fn user_connected(ws: WebSocket, users: Users, seed: u64) {
 fn parse_message(msg: Message) -> Option<ClientMessage> {
     if msg.is_binary() {
         let msg = msg.into_bytes();
-        serde_json::from_slice::<ClientMessage>(msg.as_slice()).ok()
+        deserialize::<ClientMessage>(msg.as_slice()).ok()
     } else {
         None
     }
