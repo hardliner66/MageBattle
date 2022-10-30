@@ -1,6 +1,8 @@
 #![warn(clippy::pedantic, clippy::perf)]
 
-use shared::{ClientMessage, Direction, RemoteState, ServerMessage, SPEED, TICKRATE};
+use shared::{
+    ClientMessage, Direction, RemoteState, ServerMessage, WelcomeMessage, SPEED, TICKRATE,
+};
 use std::{
     collections::HashMap,
     sync::{
@@ -21,9 +23,9 @@ struct User {
 type Users = Arc<RwLock<HashMap<usize, User>>>;
 
 static NEXT_USER_ID: AtomicUsize = AtomicUsize::new(1);
-fn send_welcome(out: &OutBoundChannel) -> usize {
+fn send_welcome(out: &OutBoundChannel, seed: usize) -> usize {
     let id = NEXT_USER_ID.fetch_add(1, Ordering::Relaxed);
-    let states = ServerMessage::Welcome(id);
+    let states = ServerMessage::Welcome(WelcomeMessage { id, seed });
     send_msg(out, &states);
     id
 }
@@ -52,11 +54,11 @@ fn create_send_channel(
     sender
 }
 
-async fn user_connected(ws: WebSocket, users: Users) {
+async fn user_connected(ws: WebSocket, users: Users, seed: usize) {
     use futures_util::StreamExt;
     let (ws_sender, mut ws_receiver) = ws.split();
     let tx = create_send_channel(ws_sender);
-    let my_id = send_welcome(&tx);
+    let my_id = send_welcome(&tx, seed);
     log::debug!("new user connected: {}", my_id);
     {
         users.write().await.insert(
@@ -143,6 +145,7 @@ fn update_state(state: &mut RemoteState) {
 }
 
 async fn update_loop(users: Users) {
+    // TODO: Fix timestep
     loop {
         for (&_uid, user) in users.write().await.iter_mut() {
             update_state(&mut user.state);
@@ -160,17 +163,20 @@ async fn main() {
     let status = warp::path!("status").map(move || warp::reply::html("hello"));
 
     let users = Users::default();
+    let seed: usize = rand::random();
 
     let arc_users = users.clone();
 
     tokio::spawn(async move { update_loop(arc_users).await });
 
     let users = warp::any().map(move || users.clone());
+    let seed = warp::any().map(move || seed);
 
-    let game = warp::path("game")
-        .and(warp::ws())
-        .and(users)
-        .map(|ws: warp::ws::Ws, users| ws.on_upgrade(move |socket| user_connected(socket, users)));
+    let game = warp::path("game").and(warp::ws()).and(users).and(seed).map(
+        |ws: warp::ws::Ws, users, seed| {
+            ws.on_upgrade(move |socket| user_connected(socket, users, seed))
+        },
+    );
     let routes = status.or(game);
     warp::serve(routes).run(([0, 0, 0, 0], 3030)).await;
 }

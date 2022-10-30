@@ -9,7 +9,7 @@ use macroquad::prelude::{
     is_key_down, next_frame, screen_height, screen_width, Color, DrawTextureParams, KeyCode, Rect,
     Texture2D, BLACK, WHITE,
 };
-use shared::{ClientMessage, Direction, RemoteState, ServerMessage, State};
+use shared::{ClientMessage, Direction, RemoteState, ServerMessage, State, WelcomeMessage};
 use std::{io, sync::Arc};
 use ws::Connection;
 
@@ -48,8 +48,9 @@ impl Game {
 
     pub fn handle_message(&mut self, msg: ServerMessage) {
         match msg {
-            ServerMessage::Welcome(id) => {
+            ServerMessage::Welcome(WelcomeMessage { id, seed }) => {
                 self.player_state.id = id;
+                self.player_state.seed = seed;
             }
             ServerMessage::GoodBye(_id) => {}
             ServerMessage::Update(remote_state) => {

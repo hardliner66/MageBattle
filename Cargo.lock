@@ -1218,6 +1218,7 @@ dependencies = [
  "glam 0.14.0",
  "log",
  "pretty_env_logger",
+ "rand",
  "serde",
  "serde_json",
  "shared",
