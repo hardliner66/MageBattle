@@ -1,4 +1,4 @@
-#![warn(clippy::pedantic)]
+#![warn(clippy::pedantic, clippy::perf)]
 
 use shared::{ClientMessage, RemoteState, ServerMessage};
 use std::{
@@ -19,14 +19,14 @@ type States = Arc<RwLock<HashMap<usize, RemoteState>>>;
 type Users = Arc<RwLock<HashMap<usize, OutBoundChannel>>>;
 
 static NEXT_USER_ID: AtomicUsize = AtomicUsize::new(1);
-async fn send_welcome(out: &OutBoundChannel) -> usize {
+fn send_welcome(out: &OutBoundChannel) -> usize {
     let id = NEXT_USER_ID.fetch_add(1, Ordering::Relaxed);
     let states = ServerMessage::Welcome(id);
-    send_msg(out, &states).await;
+    send_msg(out, &states);
     id
 }
 
-async fn send_msg(tx: &OutBoundChannel, msg: &ServerMessage) {
+fn send_msg(tx: &OutBoundChannel, msg: &ServerMessage) {
     let buffer = serde_json::to_vec(msg).unwrap();
     let msg = Message::binary(buffer);
     tx.send(Ok(msg)).unwrap();
@@ -54,7 +54,7 @@ async fn user_connected(ws: WebSocket, users: Users, states: States) {
     use futures_util::StreamExt;
     let (ws_sender, mut ws_receiver) = ws.split();
     let send_channel = create_send_channel(ws_sender);
-    let my_id = send_welcome(&send_channel).await;
+    let my_id = send_welcome(&send_channel);
     log::debug!("new user connected: {}", my_id);
     users.write().await.insert(my_id, send_channel);
     while let Some(result) = ws_receiver.next().await {
@@ -102,7 +102,7 @@ async fn user_message(my_id: usize, msg: ClientMessage, states: &States) {
 async fn broadcast(msg: ServerMessage, users: &Users) {
     let users = users.read().await;
     for (_, tx) in users.iter() {
-        send_msg(tx, &msg).await;
+        send_msg(tx, &msg);
     }
 }
 
@@ -122,7 +122,7 @@ async fn update_loop(users: Users, states: States) {
                     })
                     .collect();
                 let states = ServerMessage::Update(states);
-                send_msg(tx, &states).await;
+                send_msg(tx, &states);
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -130,6 +130,7 @@ async fn update_loop(users: Users, states: States) {
 }
 
 #[tokio::main]
+#[allow(clippy::similar_names)]
 async fn main() {
     pretty_env_logger::init();
     let status = warp::path!("status").map(move || warp::reply::html("hello"));

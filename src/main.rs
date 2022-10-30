@@ -1,4 +1,4 @@
-#![warn(clippy::pedantic)]
+#![warn(clippy::pedantic, clippy::perf)]
 
 mod tcpstream;
 mod ws;
@@ -29,6 +29,7 @@ fn draw_box(pos: Vec2, size: Vec2) {
     draw_rectangle(upper_left.x, upper_left.y, dimension.x, dimension.y, BLACK);
 }
 
+#[must_use]
 pub fn vec2_from_angle(angle: f32) -> Vec2 {
     let angle = angle - std::f32::consts::FRAC_PI_2;
     Vec2::new(angle.cos(), angle.sin())
@@ -66,10 +67,12 @@ impl Game {
     }
 
     fn update(&mut self) {
+        const ROT_SPEED: f32 = 0.015;
+        const SPEED: f32 = 0.6;
+
         if is_key_down(KeyCode::Escape) {
             self.quit = true;
         }
-        const ROT_SPEED: f32 = 0.015;
         if is_key_down(KeyCode::A) {
             self.player_state.rotation += ROT_SPEED;
         }
@@ -77,7 +80,6 @@ impl Game {
             self.player_state.rotation -= ROT_SPEED;
         }
 
-        const SPEED: f32 = 0.6;
         self.player_state.position += vec2_from_angle(self.player_state.rotation) * SPEED;
 
         for state in &mut self.remote_states {
@@ -96,6 +98,11 @@ impl Game {
         }
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )]
     pub fn draw_plane(&self, state: &RemoteState) {
         let cols = (self.texture.width() / PLANE_WIDTH).floor() as usize;
         let index = state.id % 10;
@@ -135,7 +142,7 @@ pub async fn client_connect(connection: Arc<Connection>, url: &str) {
     }
 }
 
-pub fn client_send(msg: &ClientMessage, connection: Arc<Connection>) {
+pub fn client_send(msg: &ClientMessage, connection: &Arc<Connection>) {
     let bytes = serde_json::to_vec(&msg).expect("serialization failed");
     if let Err(err) = connection.send(bytes) {
         log::error!("Failed to send: {}", err);
@@ -152,7 +159,7 @@ pub fn client_send(msg: &ClientMessage, connection: Arc<Connection>) {
     }
 }
 
-pub fn client_receive(game: &mut Game, connection: Arc<Connection>) {
+pub fn client_receive(game: &mut Game, connection: &Arc<Connection>) {
     if let Some(msg) = connection.poll() {
         let msg: ServerMessage =
             serde_json::from_slice(msg.as_slice()).expect("deserialization failed");
@@ -177,8 +184,8 @@ async fn main() -> anyhow::Result<()> {
                 position: game.player_state.position,
                 rotation: game.player_state.rotation,
             });
-            client_send(&state, connection.clone());
-            client_receive(&mut game, connection.clone());
+            client_send(&state, &connection);
+            client_receive(&mut game, &connection);
 
             game.update();
             game.draw();
@@ -186,6 +193,6 @@ async fn main() -> anyhow::Result<()> {
         if game.quit {
             return Ok(());
         }
-        next_frame().await
+        next_frame().await;
     }
 }

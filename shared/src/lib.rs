@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic, clippy::perf)]
+
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 

@@ -61,10 +61,12 @@ impl Future for ConnectFuture {
             }
         }
 
-        let stream = self.stream.take().ok_or(io::Error::new(
-            io::ErrorKind::Other,
-            "Attempted to poll ConnectFuture after already connected",
-        ))?;
+        let stream = self.stream.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Attempted to poll ConnectFuture after already connected",
+            )
+        })?;
         if let Ok(Some(err)) | Err(err) = stream.take_error() {
             return Poll::Ready(Err(err));
         }
