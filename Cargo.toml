@@ -16,6 +16,7 @@ futures = "0.3"
 async-recursion = "1.0"
 libc = "0.2"
 shared = { path = "shared" }
+clap = { version = "4.0.18", features = ["derive"] }
 
 [workspace]
 members = ["server", "shared"]

@@ -8,3 +8,4 @@ edition = "2021"
 serde = { version = "1.0.147", features = ["derive"] }
 glam = { version = "0.14", features = ["scalar-math", "serde"] }
 serde_json = "1.0"
+packed_struct = { version = "0.10.0", features = ["use_serde"] }

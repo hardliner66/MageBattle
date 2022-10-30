@@ -5,6 +5,7 @@
         "macroquad",
         "nonblocking",
         "tcpstream",
+        "TICKRATE",
         "tungstenite"
     ]
 }

@@ -9,16 +9,15 @@ use macroquad::prelude::{
     is_key_down, next_frame, screen_height, screen_width, Color, DrawTextureParams, KeyCode, Rect,
     Texture2D, BLACK, WHITE,
 };
-use shared::{ClientMessage, RemoteState, ServerMessage, State};
+use shared::{ClientMessage, Direction, RemoteState, ServerMessage, State};
 use std::{io, sync::Arc};
 use ws::Connection;
 
-const PLANE_WIDTH: f32 = 32.;
-const PLANE_HEIGHT: f32 = 32.;
+const CHAR_WIDTH: f32 = 16.;
+const CHAR_HEIGHT: f32 = 16.;
 
 pub struct Game {
     pub player_state: RemoteState,
-    pub remote_states: Vec<RemoteState>,
     pub texture: Texture2D,
     pub quit: bool,
 }
@@ -38,14 +37,9 @@ pub fn vec2_from_angle(angle: f32) -> Vec2 {
 impl Game {
     async fn new() -> anyhow::Result<Self> {
         let texture =
-            Texture2D::from_file_with_format(include_bytes!("../assets/planes.png"), None);
+            Texture2D::from_file_with_format(include_bytes!("../assets/8Bit Wizard.png"), None);
         let game = Self {
-            player_state: RemoteState {
-                id: 0,
-                position: Vec2::new(100f32, 100f32),
-                rotation: 0f32,
-            },
-            remote_states: vec![],
+            player_state: RemoteState::default(),
             texture,
             quit: false,
         };
@@ -57,43 +51,55 @@ impl Game {
             ServerMessage::Welcome(id) => {
                 self.player_state.id = id;
             }
-            ServerMessage::GoodBye(id) => {
-                self.remote_states.retain(|s| s.id != id);
-            }
-            ServerMessage::Update(remote_states) => {
-                self.remote_states = remote_states;
+            ServerMessage::GoodBye(_id) => {}
+            ServerMessage::Update(remote_state) => {
+                self.player_state.position = remote_state.position;
             }
         }
     }
 
     fn update(&mut self) {
-        const ROT_SPEED: f32 = 0.015;
-        const SPEED: f32 = 0.6;
-
         if is_key_down(KeyCode::Escape) {
             self.quit = true;
         }
-        if is_key_down(KeyCode::A) {
-            self.player_state.rotation += ROT_SPEED;
-        }
-        if is_key_down(KeyCode::D) {
-            self.player_state.rotation -= ROT_SPEED;
-        }
 
-        self.player_state.position += vec2_from_angle(self.player_state.rotation) * SPEED;
+        self.player_state.direction = match (
+            is_key_down(KeyCode::A),
+            is_key_down(KeyCode::W),
+            is_key_down(KeyCode::S),
+            is_key_down(KeyCode::D),
+        ) {
+            // left, up, down, right
+            (true, true, true, true) => None,
+            (true, true, false, true) => Some(Direction::Up),
+            (true, true, true, false) => Some(Direction::Left),
+            (true, true, false, false) => Some(Direction::UpLeft),
+            (true, false, true, true) => Some(Direction::Down),
+            (true, false, false, true) => None,
+            (true, false, true, false) => Some(Direction::DownLeft),
+            (true, false, false, false) => Some(Direction::Left),
+            (false, true, true, true) => Some(Direction::Right),
+            (false, true, false, true) => Some(Direction::UpRight),
+            (false, true, true, false) => None,
+            (false, true, false, false) => Some(Direction::Up),
+            (false, false, true, true) => Some(Direction::DownRight),
+            (false, false, false, true) => Some(Direction::Right),
+            (false, false, true, false) => Some(Direction::Down),
+            (false, false, false, false) => None,
+        };
 
-        for state in &mut self.remote_states {
-            state.position += vec2_from_angle(state.rotation) * SPEED;
+        if let None = self.player_state.direction {
+            self.player_state.anim_id = 0;
         }
 
         if self.player_state.position.x > screen_width() {
-            self.player_state.position.x = -PLANE_WIDTH;
-        } else if self.player_state.position.x < -PLANE_WIDTH {
+            self.player_state.position.x = -CHAR_WIDTH;
+        } else if self.player_state.position.x < -CHAR_WIDTH {
             self.player_state.position.x = screen_width();
         }
         if self.player_state.position.y > screen_height() {
-            self.player_state.position.y = -PLANE_HEIGHT;
-        } else if self.player_state.position.y < -PLANE_HEIGHT {
+            self.player_state.position.y = -CHAR_HEIGHT;
+        } else if self.player_state.position.y < -CHAR_HEIGHT {
             self.player_state.position.y = screen_height();
         }
     }
@@ -103,9 +109,9 @@ impl Game {
         clippy::cast_sign_loss,
         clippy::cast_possible_truncation
     )]
-    pub fn draw_plane(&self, state: &RemoteState) {
-        let cols = (self.texture.width() / PLANE_WIDTH).floor() as usize;
-        let index = state.id % 10;
+    pub fn draw_character(&self, state: &RemoteState) {
+        let cols = (self.texture.width() / CHAR_WIDTH).floor() as usize;
+        let index = state.anim_id % cols;
         let tx_x = index % cols;
         let tx_y = index / cols;
         draw_texture_ex(
@@ -115,12 +121,11 @@ impl Game {
             WHITE,
             DrawTextureParams {
                 source: Some(Rect::new(
-                    tx_x as f32 * PLANE_WIDTH,
-                    tx_y as f32 * PLANE_HEIGHT,
-                    PLANE_WIDTH,
-                    PLANE_HEIGHT,
+                    tx_x as f32 * CHAR_WIDTH,
+                    tx_y as f32 * CHAR_HEIGHT,
+                    CHAR_WIDTH,
+                    CHAR_HEIGHT,
                 )),
-                rotation: state.rotation,
                 ..Default::default()
             },
         );
@@ -129,10 +134,7 @@ impl Game {
     pub fn draw(&self) {
         clear_background(color_u8!(0, 211, 205, 205));
         draw_box(Vec2::new(200f32, 200f32), Vec2::new(10f32, 10f32));
-        self.draw_plane(&self.player_state);
-        for state in &self.remote_states {
-            self.draw_plane(state);
-        }
+        self.draw_character(&self.player_state);
     }
 }
 
@@ -181,8 +183,7 @@ async fn main() -> anyhow::Result<()> {
     loop {
         if connection_coroutine.is_done() {
             let state = ClientMessage::State(State {
-                position: game.player_state.position,
-                rotation: game.player_state.rotation,
+                direction: game.player_state.direction,
             });
             client_send(&state, &connection);
             client_receive(&mut game, &connection);
