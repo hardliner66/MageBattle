@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic)]
+
 use shared::{ClientMessage, RemoteState, ServerMessage};
 use std::{
     collections::HashMap,

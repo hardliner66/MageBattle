@@ -1,4 +1,5 @@
 use crate::tcpstream::{create_tcpstream_connection, ConnectFuture};
+use anyhow::anyhow;
 use async_recursion::async_recursion;
 use futures::future;
 use macroquad::prelude::coroutines::wait_seconds;
@@ -60,10 +61,7 @@ impl Connection {
         let stream = streams
             .into_iter()
             .find_map(|s| s.ok())
-            .ok_or(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to connect to {}", url),
-            ))?;
+            .ok_or(anyhow!("Failed to connect to {}", url))?;
         let socket = match client(url, stream) {
             Ok((socket, _)) => Ok(socket),
             Err(err) => {
@@ -74,10 +72,7 @@ impl Connection {
                 }
             }
         }?;
-        let mut socket_lock = self
-            .socket
-            .lock()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("{}", err)))?;
+        let mut socket_lock = self.socket.lock().map_err(|err| anyhow!("{}", err))?;
         *socket_lock = Some(socket);
         Ok(())
     }
