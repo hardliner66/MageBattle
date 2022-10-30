@@ -1,6 +1,6 @@
 #![warn(clippy::pedantic, clippy::perf)]
 
-use shared::{ClientMessage, RemoteState, ServerMessage};
+use shared::{ClientMessage, Direction, RemoteState, ServerMessage, SPEED, TICKRATE};
 use std::{
     collections::HashMap,
     sync::{
@@ -14,9 +14,11 @@ use warp::{
     Filter,
 };
 
-type States = Arc<RwLock<HashMap<usize, RemoteState>>>;
-
-type Users = Arc<RwLock<HashMap<usize, OutBoundChannel>>>;
+struct User {
+    tx: OutBoundChannel,
+    state: RemoteState,
+}
+type Users = Arc<RwLock<HashMap<usize, User>>>;
 
 static NEXT_USER_ID: AtomicUsize = AtomicUsize::new(1);
 fn send_welcome(out: &OutBoundChannel) -> usize {
@@ -50,13 +52,24 @@ fn create_send_channel(
     sender
 }
 
-async fn user_connected(ws: WebSocket, users: Users, states: States) {
+async fn user_connected(ws: WebSocket, users: Users) {
     use futures_util::StreamExt;
     let (ws_sender, mut ws_receiver) = ws.split();
-    let send_channel = create_send_channel(ws_sender);
-    let my_id = send_welcome(&send_channel);
+    let tx = create_send_channel(ws_sender);
+    let my_id = send_welcome(&tx);
     log::debug!("new user connected: {}", my_id);
-    users.write().await.insert(my_id, send_channel);
+    {
+        users.write().await.insert(
+            my_id,
+            User {
+                tx,
+                state: RemoteState {
+                    id: my_id,
+                    ..Default::default()
+                },
+            },
+        );
+    }
     while let Some(result) = ws_receiver.next().await {
         let msg = match result {
             Ok(msg) => msg,
@@ -68,12 +81,14 @@ async fn user_connected(ws: WebSocket, users: Users, states: States) {
         log::debug!("user sent message: {:?}", msg);
 
         if let Some(msg) = parse_message(msg) {
-            user_message(my_id, msg, &states).await;
+            let mut users = users.write().await;
+            if let Some(mut user) = users.get_mut(&my_id) {
+                user_message(msg, &mut user).await;
+            }
         }
     }
     log::debug!("user disconnected: {}", my_id);
     users.write().await.remove(&my_id);
-    states.write().await.remove(&my_id);
     broadcast(ServerMessage::GoodBye(my_id), &users).await;
 }
 
@@ -86,46 +101,55 @@ fn parse_message(msg: Message) -> Option<ClientMessage> {
     }
 }
 
-async fn user_message(my_id: usize, msg: ClientMessage, states: &States) {
+async fn user_message(msg: ClientMessage, user: &mut User) {
     match msg {
         ClientMessage::State(state) => {
-            let msg = RemoteState {
-                id: my_id,
-                position: state.position,
-                rotation: state.rotation,
-            };
-            states.write().await.insert(msg.id, msg);
+            user.state.direction = state.direction;
         }
     }
 }
 
 async fn broadcast(msg: ServerMessage, users: &Users) {
     let users = users.read().await;
-    for (_, tx) in users.iter() {
+    for (_, User { tx, .. }) in users.iter() {
         send_msg(tx, &msg);
     }
 }
 
-async fn update_loop(users: Users, states: States) {
-    loop {
-        let states: Vec<RemoteState> = states.read().await.values().cloned().collect();
-        if !states.is_empty() {
-            for (&uid, tx) in users.read().await.iter() {
-                let states = states
-                    .iter()
-                    .filter_map(|state| {
-                        if state.id == uid {
-                            None
-                        } else {
-                            Some(state.clone())
-                        }
-                    })
-                    .collect();
-                let states = ServerMessage::Update(states);
-                send_msg(tx, &states);
-            }
+fn update_state(state: &mut RemoteState) {
+    match state.direction {
+        Some(Direction::Up) => state.position.y -= SPEED,
+        Some(Direction::UpRight) => {
+            state.position.x += SPEED;
+            state.position.y -= SPEED;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        Some(Direction::Right) => state.position.x += SPEED,
+        Some(Direction::DownRight) => {
+            state.position.x += SPEED;
+            state.position.y += SPEED;
+        }
+        Some(Direction::Down) => state.position.y += SPEED,
+        Some(Direction::DownLeft) => {
+            state.position.x -= SPEED;
+            state.position.y += SPEED;
+        }
+        Some(Direction::Left) => state.position.x -= SPEED,
+        Some(Direction::UpLeft) => {
+            state.position.x -= SPEED;
+            state.position.y -= SPEED;
+        }
+        None => (),
+    }
+}
+
+async fn update_loop(users: Users) {
+    loop {
+        for (&_uid, user) in users.write().await.iter_mut() {
+            update_state(&mut user.state);
+            let state = ServerMessage::Update(user.state.clone());
+            send_msg(&user.tx, &state);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1000 / TICKRATE)).await;
     }
 }
 
@@ -136,23 +160,17 @@ async fn main() {
     let status = warp::path!("status").map(move || warp::reply::html("hello"));
 
     let users = Users::default();
-    let states = States::default();
 
     let arc_users = users.clone();
-    let arc_states = states.clone();
 
-    tokio::spawn(async move { update_loop(arc_users, arc_states).await });
+    tokio::spawn(async move { update_loop(arc_users).await });
 
     let users = warp::any().map(move || users.clone());
-    let states = warp::any().map(move || states.clone());
 
     let game = warp::path("game")
         .and(warp::ws())
         .and(users)
-        .and(states)
-        .map(|ws: warp::ws::Ws, users, states| {
-            ws.on_upgrade(move |socket| user_connected(socket, users, states))
-        });
+        .map(|ws: warp::ws::Ws, users| ws.on_upgrade(move |socket| user_connected(socket, users)));
     let routes = status.or(game);
     warp::serve(routes).run(([0, 0, 0, 0], 3030)).await;
 }
