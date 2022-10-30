@@ -3,7 +3,9 @@
 mod tcpstream;
 mod ws;
 
+use clap::Parser;
 use glam::Vec2;
+use lazy_static::lazy_static;
 use macroquad::prelude::{
     clear_background, color_u8, coroutines::start_coroutine, draw_rectangle, draw_texture_ex,
     is_key_down, next_frame, screen_height, screen_width, Color, DrawTextureParams, KeyCode, Rect,
@@ -139,8 +141,8 @@ impl Game {
     }
 }
 
-pub async fn client_connect(connection: Arc<Connection>, url: &str) {
-    if let Err(err) = connection.connect(url).await {
+pub async fn client_connect(connection: Arc<Connection>, url: String) {
+    if let Err(err) = connection.connect(&url).await {
         log::error!("Failed to connect to {}: {}", url, err);
     }
 }
@@ -153,10 +155,14 @@ pub fn client_send(msg: &ClientMessage, connection: &Arc<Connection>) {
             if let io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted = err.kind() {
                 log::error!("Connection lost, attempting to reconnect");
                 connection.restart();
-                start_coroutine(client_connect(
-                    connection.clone(),
-                    "ws://localhost:3030/game",
-                ));
+                let address = format!(
+                    "ws://{}/game",
+                    ARGS.address
+                        .clone()
+                        .unwrap_or_else(|| "localhost:3030".to_string())
+                );
+
+                start_coroutine(client_connect(connection.clone(), address));
             }
         }
     }
@@ -170,15 +176,30 @@ pub fn client_receive(game: &mut Game, connection: &Arc<Connection>) {
     }
 }
 
+#[derive(Parser)]
+struct Arguments {
+    #[arg(short, long)]
+    address: Option<String>,
+}
+
+lazy_static! {
+    /// This is an example for using doc comment attributes
+    static ref ARGS: Arguments = Arguments::parse();
+}
+
 #[macroquad::main("game")]
 async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
 
+    let args = Arguments::parse();
+
+    let address = format!(
+        "ws://{}/game",
+        args.address.unwrap_or_else(|| "localhost:3030".to_string())
+    );
+
     let connection = Arc::new(Connection::new());
-    let connection_coroutine = start_coroutine(client_connect(
-        connection.clone(),
-        "ws://localhost:3030/game",
-    ));
+    let connection_coroutine = start_coroutine(client_connect(connection.clone(), address));
 
     let mut game = Game::new().await?;
     loop {

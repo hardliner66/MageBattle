@@ -21,7 +21,7 @@ pub enum Direction {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct RemoteState {
     pub id: usize,
-    pub seed: usize,
+    pub seed: u64,
     pub anim_id: usize,
     pub position: Vec2,
     pub direction: Option<Direction>,
@@ -42,7 +42,7 @@ impl Default for RemoteState {
 #[derive(Deserialize, Serialize, Debug)]
 pub struct WelcomeMessage {
     pub id: usize,
-    pub seed: usize,
+    pub seed: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

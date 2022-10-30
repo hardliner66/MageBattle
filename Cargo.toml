@@ -17,6 +17,7 @@ async-recursion = "1.0"
 libc = "0.2"
 shared = { path = "shared" }
 clap = { version = "4.0.18", features = ["derive"] }
+lazy_static = "1.4.0"
 
 [workspace]
 members = ["server", "shared"]

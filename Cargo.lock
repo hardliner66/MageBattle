@@ -634,6 +634,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4217ad341ebadf8d8e724e264f13e593e0648f5b3e94b3896a5df283be015ecc"
 
 [[package]]
+name = "lazy_static"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
+
+[[package]]
 name = "lewton"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -700,6 +706,7 @@ dependencies = [
  "clap",
  "futures",
  "glam 0.14.0",
+ "lazy_static",
  "libc",
  "log",
  "macroquad",
@@ -1214,6 +1221,7 @@ name = "server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "futures-util",
  "glam 0.14.0",
  "log",

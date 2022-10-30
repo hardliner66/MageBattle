@@ -1,10 +1,12 @@
 #![warn(clippy::pedantic, clippy::perf)]
 
+use clap::Parser;
 use shared::{
     ClientMessage, Direction, RemoteState, ServerMessage, WelcomeMessage, SPEED, TICKRATE,
 };
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -23,7 +25,7 @@ struct User {
 type Users = Arc<RwLock<HashMap<usize, User>>>;
 
 static NEXT_USER_ID: AtomicUsize = AtomicUsize::new(1);
-fn send_welcome(out: &OutBoundChannel, seed: usize) -> usize {
+fn send_welcome(out: &OutBoundChannel, seed: u64) -> usize {
     let id = NEXT_USER_ID.fetch_add(1, Ordering::Relaxed);
     let states = ServerMessage::Welcome(WelcomeMessage { id, seed });
     send_msg(out, &states);
@@ -54,7 +56,7 @@ fn create_send_channel(
     sender
 }
 
-async fn user_connected(ws: WebSocket, users: Users, seed: usize) {
+async fn user_connected(ws: WebSocket, users: Users, seed: u64) {
     use futures_util::StreamExt;
     let (ws_sender, mut ws_receiver) = ws.split();
     let tx = create_send_channel(ws_sender);
@@ -156,14 +158,25 @@ async fn update_loop(users: Users) {
     }
 }
 
+#[derive(Parser)]
+struct Arguments {
+    #[arg(short, long)]
+    listen: Option<String>,
+    #[arg(short, long)]
+    seed: Option<usize>,
+}
+
 #[tokio::main]
 #[allow(clippy::similar_names)]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
+
+    let args = Arguments::parse();
+
     let status = warp::path!("status").map(move || warp::reply::html("hello"));
 
     let users = Users::default();
-    let seed: usize = rand::random();
+    let seed: u64 = rand::random();
 
     let arc_users = users.clone();
 
@@ -178,5 +191,13 @@ async fn main() {
         },
     );
     let routes = status.or(game);
-    warp::serve(routes).run(([0, 0, 0, 0], 3030)).await;
+    warp::serve(routes)
+        .run(
+            args.listen
+                .unwrap_or_else(|| "127.0.0.1:3030".to_owned())
+                .parse::<SocketAddr>()?,
+        )
+        .await;
+
+    Ok(())
 }
