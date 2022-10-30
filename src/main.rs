@@ -7,9 +7,10 @@ use clap::Parser;
 use glam::Vec2;
 use lazy_static::lazy_static;
 use macroquad::prelude::{
-    clear_background, color_u8, coroutines::start_coroutine, draw_rectangle, draw_texture_ex,
-    is_key_down, next_frame, screen_height, screen_width, Color, DrawTextureParams, KeyCode, Rect,
-    Texture2D, BLACK, WHITE,
+    clear_background, color_u8,
+    coroutines::{start_coroutine, wait_seconds},
+    draw_rectangle, draw_texture_ex, is_key_down, next_frame, screen_height, screen_width, Color,
+    DrawTextureParams, KeyCode, Rect, Texture2D, BLACK, WHITE,
 };
 use shared::{
     deserialize, serialize, ClientMessage, Direction, RemoteState, ServerMessage, State,
@@ -145,9 +146,11 @@ impl Game {
 }
 
 pub async fn client_connect(connection: Arc<Connection>, url: String) {
-    if let Err(err) = connection.connect(&url).await {
-        log::error!("Failed to connect to {}: {}", url, err);
+    while let Err(err) = connection.connect(&url).await {
+        log::error!("{}, attempting again in 1 second", err);
+        wait_seconds(1.0).await;
     }
+    log::info!("Connection established successfully");
 }
 
 pub fn client_send(msg: &ClientMessage, connection: &Arc<Connection>) {

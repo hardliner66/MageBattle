@@ -1,8 +1,6 @@
 use crate::tcpstream::{create_tcpstream_connection, ConnectFuture};
 use anyhow::anyhow;
-use async_recursion::async_recursion;
 use futures::future;
-use macroquad::prelude::coroutines::wait_seconds;
 use mio::net;
 use std::{io, net::ToSocketAddrs, sync::Mutex};
 use tungstenite::{
@@ -21,7 +19,6 @@ impl Connection {
         Self::default()
     }
 
-    #[async_recursion]
     #[allow(clippy::similar_names)]
     pub async fn connect(&self, url: &str) -> anyhow::Result<()> {
         let req = url.into_client_request()?;
@@ -34,17 +31,7 @@ impl Connection {
         let stream_futures = addresses
             .map(create_tcpstream_connection)
             .collect::<io::Result<Vec<ConnectFuture>>>()?;
-        if let Err(err) = self.connect_internal(stream_futures, url).await {
-            log::error!(
-                "Failed to connect to {}, attempting again in 1 second: {}",
-                url,
-                err
-            );
-            wait_seconds(1.0).await;
-            self.connect(url).await?;
-        }
-        log::info!("Connection established successfully");
-        Ok(())
+        self.connect_internal(stream_futures, url).await
     }
 
     pub fn restart(&self) {
@@ -66,7 +53,22 @@ impl Connection {
             Ok((socket, _)) => Ok(socket),
             Err(err) => {
                 if let HandshakeError::Interrupted(mid_handshake) = err {
-                    Self::retry_handshake(mid_handshake)
+                    let mut success = false;
+                    let mut result = None;
+                    let mut mid_handshake_old = Some(mid_handshake);
+                    while !success {
+                        match Self::retry_handshake(mid_handshake_old.take().unwrap()) {
+                            Err(HandshakeError::Interrupted(mid_handshake)) => {
+                                mid_handshake_old = Some(mid_handshake)
+                            }
+                            Err(HandshakeError::Failure(_)) => (),
+                            Ok(x) => {
+                                success = true;
+                                result = Some(Ok(x));
+                            }
+                        }
+                    }
+                    result.unwrap()
                 } else {
                     Err(err)
                 }
@@ -85,10 +87,7 @@ impl Connection {
     > {
         match mid_handshake.handshake() {
             Ok((socket, _)) => Ok(socket),
-            Err(err) => match err {
-                HandshakeError::Interrupted(mid_handshake) => Self::retry_handshake(mid_handshake),
-                HandshakeError::Failure(_) => Err(err),
-            },
+            Err(err) => Err(err),
         }
     }
 
