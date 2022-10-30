@@ -17,3 +17,8 @@ shared = { path = "../shared" }
 tokio = { version = "1.1", features = ["full"] }
 tokio-stream = "0.1"
 warp = "0.3"
+
+[features]
+default = ["binary"]
+binary = ["shared/binary"]
+json = ["shared/json"]

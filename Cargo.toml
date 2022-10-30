@@ -20,3 +20,8 @@ tungstenite = "0.17"
 
 [workspace]
 members = ["server", "shared"]
+
+[features]
+default = ["binary"]
+binary = ["shared/binary"]
+json = ["shared/json"]
