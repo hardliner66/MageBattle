@@ -1,9 +1,9 @@
 #![warn(clippy::pedantic, clippy::perf)]
 
-use glam::Vec2;
 use serde::{Deserialize, Serialize};
+pub use uuid::Uuid;
 
-pub const SPEED: f32 = 3.;
+pub const SPEED: f32 = 1.;
 pub const TICKRATE: u64 = 64;
 
 #[cfg(feature = "json")]
@@ -38,58 +38,93 @@ where
     Ok(bincode::deserialize(v)?)
 }
 
-#[derive(Deserialize, Serialize, Clone, Copy, Debug)]
-pub enum Direction {
-    Up,
-    UpRight,
-    Right,
-    DownRight,
-    Down,
-    DownLeft,
-    Left,
-    UpLeft,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct RemoteState {
-    pub id: usize,
-    pub seed: u64,
-    pub anim_id: usize,
-    pub position: Vec2,
-    pub direction: Option<Direction>,
-}
-
-impl Default for RemoteState {
-    fn default() -> Self {
-        Self {
-            id: 0,
-            seed: 0,
-            anim_id: 0,
-            position: Vec2::new(100f32, 100f32),
-            direction: Default::default(),
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-pub struct WelcomeMessage {
-    pub id: usize,
-    pub seed: u64,
-}
-
 #[derive(Deserialize, Serialize, Debug)]
 pub enum ServerMessage {
-    Welcome(WelcomeMessage),
-    GoodBye(usize),
-    Update(RemoteState),
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct State {
-    pub direction: Option<Direction>,
+    #[serde(rename = "w")]
+    Welcome {
+        #[serde(rename = "i")]
+        id: Uuid,
+    },
+    #[serde(rename = "j")]
+    PlayerJoined {
+        #[serde(rename = "i")]
+        id: Uuid,
+        #[serde(rename = "n")]
+        name: String,
+    },
+    #[serde(rename = "gb")]
+    GoodBye(Uuid),
+    #[serde(rename = "ucn")]
+    PlayerChangedName {
+        #[serde(rename = "i")]
+        id: Uuid,
+        #[serde(rename = "n")]
+        new_name: String,
+    },
+    #[serde(rename = "n")]
+    NameNotAvailable {
+        #[serde(rename = "n")]
+        name: String,
+    },
+    #[serde(rename = "u")]
+    Update {
+        #[serde(rename = "s")]
+        spawns: usize,
+    },
+    #[serde(rename = "f")]
+    Finish {
+        #[serde(rename = "k")]
+        enemy_kills: usize,
+    },
+    #[serde(rename = "cr")]
+    ChallengeReceived {
+        #[serde(rename = "rid")]
+        request_id: Uuid,
+        #[serde(rename = "n")]
+        name: String,
+    },
+    #[serde(rename = "cd")]
+    ChallengeDenied {
+        #[serde(rename = "rid")]
+        request_id: Uuid,
+    },
+    #[serde(rename = "rr")]
+    RequestReceived {
+        #[serde(rename = "rid")]
+        request_id: Uuid,
+    },
 }
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum ClientMessage {
-    State(State),
+    #[serde(rename = "c")]
+    Connect {
+        #[serde(rename = "n")]
+        name: String,
+    },
+    #[serde(rename = "cn")]
+    ChangeName {
+        #[serde(rename = "n")]
+        name: String,
+    },
+    #[serde(rename = "cp")]
+    ChallengePlayer {
+        #[serde(rename = "n")]
+        name: String,
+    },
+    #[serde(rename = "ac")]
+    AcceptChallenge {
+        #[serde(rename = "rid")]
+        request_id: Uuid,
+    },
+    #[serde(rename = "dc")]
+    DenyChallenge {
+        #[serde(rename = "rid")]
+        request_id: Uuid,
+    },
+    #[serde(rename = "s")]
+    State {
+        #[serde(rename = "k")]
+        kills: usize,
+    },
 }

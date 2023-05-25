@@ -6,24 +6,50 @@ mod ws;
 use clap::Parser;
 use glam::Vec2;
 use lazy_static::lazy_static;
-use macroquad::prelude::{
-    clear_background, color_u8,
-    coroutines::{start_coroutine, wait_seconds},
-    draw_rectangle, draw_texture_ex, is_key_down, next_frame, screen_height, screen_width, Color,
-    DrawTextureParams, KeyCode, Rect, Texture2D, BLACK, WHITE,
+use macroquad::{
+    prelude::{
+        clear_background, color_u8,
+        coroutines::{start_coroutine, wait_seconds},
+        draw_rectangle, draw_texture_ex, is_key_down, next_frame, screen_height, screen_width,
+        Color, DrawTextureParams, KeyCode, Rect, Texture2D, BLACK, WHITE,
+    },
 };
-use shared::{
-    deserialize, serialize, ClientMessage, Direction, RemoteState, ServerMessage, State,
-    WelcomeMessage,
-};
-use std::{io, sync::Arc};
+use shared::{deserialize, serialize, ClientMessage, ServerMessage, Uuid, SPEED};
+use std::{collections::HashMap, io, sync::Arc};
 use ws::Connection;
 
 const CHAR_WIDTH: f32 = 16.;
 const CHAR_HEIGHT: f32 = 16.;
 
+#[derive(Clone, Copy, Debug)]
+pub enum Direction {
+    Up,
+    UpRight,
+    Right,
+    DownRight,
+    Down,
+    DownLeft,
+    Left,
+    UpLeft,
+}
+
+#[derive(Default, Clone)]
+pub struct PlayerState {
+    name: String,
+    id: Uuid,
+    seed: u64,
+    anim_id: usize,
+    position: Vec2,
+    kills: usize,
+}
+
+pub struct RemotePlayerState {
+    name: String,
+}
+
 pub struct Game {
-    pub player_state: RemoteState,
+    pub player_state: PlayerState,
+    pub players: HashMap<Uuid, RemotePlayerState>,
     pub texture: Texture2D,
     pub quit: bool,
 }
@@ -45,7 +71,8 @@ impl Game {
         let texture =
             Texture2D::from_file_with_format(include_bytes!("../assets/8Bit Wizard.png"), None);
         let game = Self {
-            player_state: RemoteState::default(),
+            player_state: PlayerState::default(),
+            players: HashMap::new(),
             texture,
             quit: false,
         };
@@ -54,14 +81,32 @@ impl Game {
 
     pub fn handle_message(&mut self, msg: ServerMessage) {
         match msg {
-            ServerMessage::Welcome(WelcomeMessage { id, seed }) => {
+            ServerMessage::Welcome { id } => {
                 self.player_state.id = id;
-                self.player_state.seed = seed;
             }
-            ServerMessage::GoodBye(_id) => {}
-            ServerMessage::Update(remote_state) => {
-                self.player_state.position = remote_state.position;
+            ServerMessage::GoodBye(id) => {
+                if id != self.player_state.id {
+                    self.players.remove(&id);
+                }
             }
+            ServerMessage::PlayerChangedName { id, new_name } => {
+                if self.player_state.id == id {
+                    self.player_state.name = new_name;
+                } else {
+                    if let Some(player) = self.players.get_mut(&id) {
+                        player.name = new_name;
+                    }
+                }
+            }
+            ServerMessage::Update { spawns } => todo!(),
+            ServerMessage::Finish { enemy_kills } => todo!(),
+            ServerMessage::PlayerJoined { id, name } => {
+                self.players.insert(id, RemotePlayerState { name });
+            }
+            ServerMessage::NameNotAvailable { name } => todo!(),
+            ServerMessage::ChallengeReceived { request_id, name } => todo!(),
+            ServerMessage::ChallengeDenied { request_id } => todo!(),
+            ServerMessage::RequestReceived { request_id } => todo!(),
         }
     }
 
@@ -70,7 +115,11 @@ impl Game {
             self.quit = true;
         }
 
-        self.player_state.direction = match (
+        if is_key_down(KeyCode::Space) {
+            self.player_state.kills += 1;
+        }
+
+        let direction = match (
             is_key_down(KeyCode::A),
             is_key_down(KeyCode::W),
             is_key_down(KeyCode::S),
@@ -95,8 +144,30 @@ impl Game {
             (false, false, false, false) => None,
         };
 
-        if let None = self.player_state.direction {
-            self.player_state.anim_id = 0;
+        self.player_state.anim_id = 0;
+
+        match direction {
+            Some(Direction::Up) => self.player_state.position.y -= SPEED,
+            Some(Direction::UpRight) => {
+                self.player_state.position.x += SPEED;
+                self.player_state.position.y -= SPEED;
+            }
+            Some(Direction::Right) => self.player_state.position.x += SPEED,
+            Some(Direction::DownRight) => {
+                self.player_state.position.x += SPEED;
+                self.player_state.position.y += SPEED;
+            }
+            Some(Direction::Down) => self.player_state.position.y += SPEED,
+            Some(Direction::DownLeft) => {
+                self.player_state.position.x -= SPEED;
+                self.player_state.position.y += SPEED;
+            }
+            Some(Direction::Left) => self.player_state.position.x -= SPEED,
+            Some(Direction::UpLeft) => {
+                self.player_state.position.x -= SPEED;
+                self.player_state.position.y -= SPEED;
+            }
+            None => (),
         }
 
         if self.player_state.position.x > screen_width() {
@@ -116,7 +187,7 @@ impl Game {
         clippy::cast_sign_loss,
         clippy::cast_possible_truncation
     )]
-    pub fn draw_character(&self, state: &RemoteState) {
+    pub fn draw_character(&self, state: &PlayerState) {
         let cols = (self.texture.width() / CHAR_WIDTH).floor() as usize;
         let index = state.anim_id % cols;
         let tx_x = index % cols;
@@ -136,6 +207,16 @@ impl Game {
                 ..Default::default()
             },
         );
+
+        egui_macroquad::ui(|egui_ctx| {
+            egui::Window::new("debug").show(egui_ctx, |ui| {
+                ui.label(&format!("Kills: {}", self.player_state.kills));
+            });
+        });
+
+        // Draw things before egui
+
+        egui_macroquad::draw();
     }
 
     pub fn draw(&self) {
@@ -209,9 +290,9 @@ async fn main() -> anyhow::Result<()> {
     let mut game = Game::new().await?;
     loop {
         if connection_coroutine.is_done() {
-            let state = ClientMessage::State(State {
-                direction: game.player_state.direction,
-            });
+            let state = ClientMessage::State {
+                kills: game.player_state.kills,
+            };
             client_send(&state, &connection);
             client_receive(&mut game, &connection);
 

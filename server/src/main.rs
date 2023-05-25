@@ -1,34 +1,29 @@
 #![warn(clippy::pedantic, clippy::perf)]
 
 use clap::Parser;
-use shared::{
-    deserialize, serialize, ClientMessage, Direction, RemoteState, ServerMessage, WelcomeMessage,
-    SPEED, TICKRATE,
-};
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-};
+use shared::{deserialize, serialize, ClientMessage, ServerMessage, Uuid};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 use warp::{
     ws::{Message, WebSocket},
     Filter,
 };
 
+#[derive(Default)]
+struct GameServerState {
+    users: HashMap<Uuid, User>,
+}
+
 struct User {
     tx: OutBoundChannel,
-    state: RemoteState,
+    in_game: bool,
+    name: String,
 }
-type Users = Arc<RwLock<HashMap<usize, User>>>;
+type GameServer = Arc<RwLock<GameServerState>>;
 
-static NEXT_USER_ID: AtomicUsize = AtomicUsize::new(1);
-fn send_welcome(out: &OutBoundChannel, seed: u64) -> usize {
-    let id = NEXT_USER_ID.fetch_add(1, Ordering::Relaxed);
-    let states = ServerMessage::Welcome(WelcomeMessage { id, seed });
+fn send_welcome(out: &OutBoundChannel, seed: u64) -> Uuid {
+    let id = Uuid::new_v4();
+    let states = ServerMessage::Welcome { id };
     send_msg(out, &states);
     id
 }
@@ -39,7 +34,14 @@ fn send_msg(tx: &OutBoundChannel, msg: &ServerMessage) {
     tx.send(Ok(msg)).unwrap();
 }
 
+struct ClientMessageWrapper {
+    id: Uuid,
+    msg: ClientMessage,
+}
+
 type OutBoundChannel = mpsc::UnboundedSender<std::result::Result<Message, warp::Error>>;
+type ClientChannelSender = mpsc::UnboundedSender<ClientMessageWrapper>;
+type ClientChannelReceiver = mpsc::UnboundedReceiver<ClientMessageWrapper>;
 
 fn create_send_channel(
     ws_sender: futures_util::stream::SplitSink<WebSocket, Message>,
@@ -57,21 +59,24 @@ fn create_send_channel(
     sender
 }
 
-async fn user_connected(ws: WebSocket, users: Users, seed: u64) {
+async fn user_connected(
+    ws: WebSocket,
+    sender: ClientChannelSender,
+    game_server: GameServer,
+    seed: u64,
+) {
     use futures_util::StreamExt;
     let (ws_sender, mut ws_receiver) = ws.split();
     let tx = create_send_channel(ws_sender);
     let my_id = send_welcome(&tx, seed);
     log::debug!("new user connected: {}", my_id);
     {
-        users.write().await.insert(
+        game_server.write().await.users.insert(
             my_id,
             User {
                 tx,
-                state: RemoteState {
-                    id: my_id,
-                    ..Default::default()
-                },
+                name: String::new(),
+                in_game: false,
             },
         );
     }
@@ -86,15 +91,17 @@ async fn user_connected(ws: WebSocket, users: Users, seed: u64) {
         log::debug!("user sent message: {:?}", msg);
 
         if let Some(msg) = parse_message(msg) {
-            let mut users = users.write().await;
-            if let Some(mut user) = users.get_mut(&my_id) {
-                user_message(msg, &mut user).await;
+            if sender
+                .send(ClientMessageWrapper { id: my_id, msg })
+                .is_err()
+            {
+                break;
             }
         }
     }
     log::debug!("user disconnected: {}", my_id);
-    users.write().await.remove(&my_id);
-    broadcast(ServerMessage::GoodBye(my_id), &users).await;
+    game_server.write().await.users.remove(&my_id);
+    broadcast(&game_server, ServerMessage::GoodBye(my_id)).await;
 }
 
 fn parse_message(msg: Message) -> Option<ClientMessage> {
@@ -106,56 +113,92 @@ fn parse_message(msg: Message) -> Option<ClientMessage> {
     }
 }
 
-async fn user_message(msg: ClientMessage, user: &mut User) {
+async fn user_message(msg: ClientMessage, id: Uuid, game_server: &GameServer) {
     match msg {
-        ClientMessage::State(state) => {
-            user.state.direction = state.direction;
+        ClientMessage::Connect { name } => {
+            let msg = ServerMessage::PlayerJoined { id, name };
+            for user in game_server.read().await.users.values() {
+                send_msg(&user.tx, &msg);
+            }
         }
+        ClientMessage::ChangeName { name } => {
+            if game_server
+                .read()
+                .await
+                .users
+                .iter()
+                .find(|(_, user)| user.name.to_lowercase() == name.to_lowercase())
+                .is_some()
+            {
+                ServerMessage::NameNotAvailable { name };
+            } else {
+                broadcast(
+                    game_server,
+                    ServerMessage::PlayerChangedName { id, new_name: name },
+                )
+                .await;
+            }
+        }
+        ClientMessage::ChallengePlayer { name } => {
+            if let Some((_, player)) = game_server
+                .read()
+                .await
+                .users
+                .iter()
+                .find(|(_, user)| user.name.to_lowercase() == name.to_lowercase())
+            {
+                let request_id = Uuid::new_v4();
+                send_msg(
+                    &player.tx,
+                    &ServerMessage::ChallengeReceived {
+                        request_id: request_id.clone(),
+                        name: player.name.clone(),
+                    },
+                );
+                send_msg(&player.tx, &ServerMessage::RequestReceived { request_id });
+            }
+        }
+        ClientMessage::AcceptChallenge { request_id } => todo!(),
+        ClientMessage::DenyChallenge { request_id } => todo!(),
+        ClientMessage::State { kills } => todo!(),
     }
 }
 
-async fn broadcast(msg: ServerMessage, users: &Users) {
-    let users = users.read().await;
-    for (_, User { tx, .. }) in users.iter() {
+async fn broadcast(game_server: &GameServer, msg: ServerMessage) {
+    let game_server = game_server.read().await;
+    for (_, User { tx, .. }) in game_server.users.iter() {
         send_msg(tx, &msg);
     }
 }
 
-fn update_state(state: &mut RemoteState) {
-    match state.direction {
-        Some(Direction::Up) => state.position.y -= SPEED,
-        Some(Direction::UpRight) => {
-            state.position.x += SPEED;
-            state.position.y -= SPEED;
-        }
-        Some(Direction::Right) => state.position.x += SPEED,
-        Some(Direction::DownRight) => {
-            state.position.x += SPEED;
-            state.position.y += SPEED;
-        }
-        Some(Direction::Down) => state.position.y += SPEED,
-        Some(Direction::DownLeft) => {
-            state.position.x -= SPEED;
-            state.position.y += SPEED;
-        }
-        Some(Direction::Left) => state.position.x -= SPEED,
-        Some(Direction::UpLeft) => {
-            state.position.x -= SPEED;
-            state.position.y -= SPEED;
-        }
-        None => (),
-    }
-}
-
-async fn update_loop(users: Users) {
-    // TODO: Fix timestep
+async fn update_loop(mut rx: ClientChannelReceiver, game_server: GameServer) {
     loop {
-        for (&_uid, user) in users.write().await.iter_mut() {
-            update_state(&mut user.state);
-            let state = ServerMessage::Update(user.state.clone());
-            send_msg(&user.tx, &state);
+        while let Some(ClientMessageWrapper { id, msg }) = rx.recv().await {
+            let user_still_here = game_server.read().await.users.contains_key(&id);
+            if user_still_here {
+                user_message(msg, id, &game_server).await;
+                // match answer {
+                //     Some(Answer::Broadcast(msg)) => {
+                //         for (_, user) in users.write().await.iter_mut() {
+                //             send_msg(&user.tx, &msg)
+                //         }
+                //     }
+                //     Some(Answer::Response(msg)) => users
+                //         .write()
+                //         .await
+                //         .get_mut(&id)
+                //         .map(|user| send_msg(&user.tx, &msg))
+                //         .unwrap_or(()),
+                //     Some(Answer::SendTo { other, msg }) => users
+                //         .write()
+                //         .await
+                //         .get_mut(&other)
+                //         .map(|user| send_msg(&user.tx, &msg))
+                //         .unwrap_or(()),
+                //     None => (),
+                // }
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(1000 / TICKRATE)).await;
     }
 }
 
@@ -176,21 +219,26 @@ async fn main() -> anyhow::Result<()> {
 
     let status = warp::path!("status").map(move || warp::reply::html("hello"));
 
-    let users = Users::default();
+    let game_server = GameServer::default();
     let seed: u64 = rand::random();
 
-    let arc_users = users.clone();
+    let arc_game_server = game_server.clone();
 
-    tokio::spawn(async move { update_loop(arc_users).await });
+    let (sender, receiver) = mpsc::unbounded_channel();
 
-    let users = warp::any().map(move || users.clone());
+    tokio::spawn(async move { update_loop(receiver, arc_game_server).await });
+
+    let game_server = warp::any().map(move || game_server.clone());
     let seed = warp::any().map(move || seed);
 
-    let game = warp::path("game").and(warp::ws()).and(users).and(seed).map(
-        |ws: warp::ws::Ws, users, seed| {
-            ws.on_upgrade(move |socket| user_connected(socket, users, seed))
-        },
-    );
+    let game = warp::path("game")
+        .and(warp::ws())
+        .and(game_server)
+        .and(seed)
+        .map(move |ws: warp::ws::Ws, game_server, seed| {
+            let sender = sender.clone();
+            ws.on_upgrade(move |socket| user_connected(socket, sender, game_server, seed))
+        });
     let routes = status.or(game);
     warp::serve(routes)
         .run(
