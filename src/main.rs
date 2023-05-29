@@ -6,13 +6,11 @@ mod ws;
 use clap::Parser;
 use glam::Vec2;
 use lazy_static::lazy_static;
-use macroquad::{
-    prelude::{
-        clear_background, color_u8,
-        coroutines::{start_coroutine, wait_seconds},
-        draw_rectangle, draw_texture_ex, is_key_down, next_frame, screen_height, screen_width,
-        Color, DrawTextureParams, KeyCode, Rect, Texture2D, BLACK, WHITE,
-    },
+use macroquad::prelude::{
+    clear_background, color_u8,
+    coroutines::{start_coroutine, wait_seconds},
+    draw_rectangle, draw_texture_ex, is_key_down, next_frame, screen_height, screen_width, Color,
+    DrawTextureParams, KeyCode, Rect, Texture2D, BLACK, WHITE,
 };
 use shared::{deserialize, serialize, ClientMessage, ServerMessage, Uuid, SPEED};
 use std::{collections::HashMap, io, sync::Arc};
@@ -34,20 +32,49 @@ pub enum Direction {
 }
 
 #[derive(Default, Clone)]
-pub struct PlayerState {
-    name: String,
-    id: Uuid,
+pub struct OnlineState {
+    pub id: Uuid,
+}
+
+#[derive(Default, Clone)]
+pub struct InGame {
     seed: u64,
     anim_id: usize,
     position: Vec2,
     kills: usize,
 }
 
+#[derive(Default, Clone)]
+pub struct Base {
+    name: String,
+}
+
+#[derive(Clone)]
+pub enum PlayerState {
+    Offline {
+        base: Base,
+    },
+    Online {
+        base: Base,
+        online_state: OnlineState,
+    },
+    InGame {
+        base: Base,
+        online_state: OnlineState,
+        ingame: InGame,
+    },
+}
+
 pub struct RemotePlayerState {
     name: String,
 }
 
+pub enum Command {
+    Connect,
+}
+
 pub struct Game {
+    pub command: Option<Command>,
     pub player_state: PlayerState,
     pub players: HashMap<Uuid, RemotePlayerState>,
     pub texture: Texture2D,
@@ -71,7 +98,12 @@ impl Game {
         let texture =
             Texture2D::from_file_with_format(include_bytes!("../assets/8Bit Wizard.png"), None);
         let game = Self {
-            player_state: PlayerState::default(),
+            command: None,
+            player_state: PlayerState::Offline {
+                base: Base {
+                    name: String::new(),
+                },
+            },
             players: HashMap::new(),
             texture,
             quit: false,
@@ -80,34 +112,51 @@ impl Game {
     }
 
     pub fn handle_message(&mut self, msg: ServerMessage) {
-        match msg {
-            ServerMessage::Welcome { id } => {
-                self.player_state.id = id;
-            }
-            ServerMessage::GoodBye(id) => {
-                if id != self.player_state.id {
-                    self.players.remove(&id);
-                }
-            }
-            ServerMessage::PlayerChangedName { id, new_name } => {
-                if self.player_state.id == id {
-                    self.player_state.name = new_name;
-                } else {
-                    if let Some(player) = self.players.get_mut(&id) {
-                        player.name = new_name;
+        let next_state = match &mut self.player_state {
+            PlayerState::Offline { base } => match msg {
+                ServerMessage::Welcome { id } => Some(PlayerState::Online {
+                    base: base.clone(),
+                    online_state: OnlineState { id },
+                }),
+                // ServerMessage::InvalidMessage => todo!(),
+                // ServerMessage::NameNotAvailable => todo!(),
+                _ => None,
+            },
+            PlayerState::Online { base, online_state } => match msg {
+                ServerMessage::GoodBye(id) => {
+                    if id != online_state.id {
+                        self.players.remove(&id);
+                    } else {
+                        self.quit = true;
                     }
+                    Some(PlayerState::Offline { base: base.clone() })
                 }
-            }
-            ServerMessage::Update { spawns } => todo!(),
-            ServerMessage::Finish { enemy_kills } => todo!(),
-            ServerMessage::PlayerJoined { id, name } => {
-                self.players.insert(id, RemotePlayerState { name });
-            }
-            ServerMessage::NameNotAvailable { name } => todo!(),
-            ServerMessage::ChallengeReceived { request_id, name } => todo!(),
-            ServerMessage::ChallengeDenied { request_id } => todo!(),
-            ServerMessage::RequestReceived { request_id } => todo!(),
-        }
+                ServerMessage::PlayerChangedName { id, new_name } => {
+                    if online_state.id == id {
+                        base.name = new_name;
+                    } else {
+                        if let Some(player) = self.players.get_mut(&id) {
+                            player.name = new_name;
+                        }
+                    }
+                    None
+                }
+                ServerMessage::PlayerJoined { id, name } => {
+                    self.players.insert(id, RemotePlayerState { name });
+                    None
+                }
+                ServerMessage::ChallengeReceived { request_id, name } => todo!(),
+                ServerMessage::ChallengeDenied { request_id } => todo!(),
+                ServerMessage::RequestReceived { request_id } => todo!(),
+                ServerMessage::InvalidMessage => todo!(),
+                _ => None,
+            },
+            PlayerState::InGame {
+                base,
+                online_state,
+                ingame,
+            } => todo!(),
+        };
     }
 
     fn update(&mut self) {
@@ -116,7 +165,15 @@ impl Game {
         }
 
         if is_key_down(KeyCode::Space) {
-            self.player_state.kills += 1;
+            match &mut self.player_state {
+                PlayerState::Offline { base } => todo!(),
+                PlayerState::Online { base, online_state } => todo!(),
+                PlayerState::InGame {
+                    base,
+                    online_state,
+                    ingame,
+                } => ingame.kills += 1,
+            }
         }
 
         let direction = match (
@@ -144,41 +201,48 @@ impl Game {
             (false, false, false, false) => None,
         };
 
-        self.player_state.anim_id = 0;
+        if let PlayerState::InGame {
+            base,
+            online_state,
+            ingame,
+        } = &mut self.player_state
+        {
+            ingame.anim_id = 0;
 
-        match direction {
-            Some(Direction::Up) => self.player_state.position.y -= SPEED,
-            Some(Direction::UpRight) => {
-                self.player_state.position.x += SPEED;
-                self.player_state.position.y -= SPEED;
+            match direction {
+                Some(Direction::Up) => ingame.position.y -= SPEED,
+                Some(Direction::UpRight) => {
+                    ingame.position.x += SPEED;
+                    ingame.position.y -= SPEED;
+                }
+                Some(Direction::Right) => ingame.position.x += SPEED,
+                Some(Direction::DownRight) => {
+                    ingame.position.x += SPEED;
+                    ingame.position.y += SPEED;
+                }
+                Some(Direction::Down) => ingame.position.y += SPEED,
+                Some(Direction::DownLeft) => {
+                    ingame.position.x -= SPEED;
+                    ingame.position.y += SPEED;
+                }
+                Some(Direction::Left) => ingame.position.x -= SPEED,
+                Some(Direction::UpLeft) => {
+                    ingame.position.x -= SPEED;
+                    ingame.position.y -= SPEED;
+                }
+                None => (),
             }
-            Some(Direction::Right) => self.player_state.position.x += SPEED,
-            Some(Direction::DownRight) => {
-                self.player_state.position.x += SPEED;
-                self.player_state.position.y += SPEED;
-            }
-            Some(Direction::Down) => self.player_state.position.y += SPEED,
-            Some(Direction::DownLeft) => {
-                self.player_state.position.x -= SPEED;
-                self.player_state.position.y += SPEED;
-            }
-            Some(Direction::Left) => self.player_state.position.x -= SPEED,
-            Some(Direction::UpLeft) => {
-                self.player_state.position.x -= SPEED;
-                self.player_state.position.y -= SPEED;
-            }
-            None => (),
-        }
 
-        if self.player_state.position.x > screen_width() {
-            self.player_state.position.x = -CHAR_WIDTH;
-        } else if self.player_state.position.x < -CHAR_WIDTH {
-            self.player_state.position.x = screen_width();
-        }
-        if self.player_state.position.y > screen_height() {
-            self.player_state.position.y = -CHAR_HEIGHT;
-        } else if self.player_state.position.y < -CHAR_HEIGHT {
-            self.player_state.position.y = screen_height();
+            if ingame.position.x > screen_width() {
+                ingame.position.x = -CHAR_WIDTH;
+            } else if ingame.position.x < -CHAR_WIDTH {
+                ingame.position.x = screen_width();
+            }
+            if ingame.position.y > screen_height() {
+                ingame.position.y = -CHAR_HEIGHT;
+            } else if ingame.position.y < -CHAR_HEIGHT {
+                ingame.position.y = screen_height();
+            }
         }
     }
 
@@ -189,30 +253,39 @@ impl Game {
     )]
     pub fn draw_character(&self, state: &PlayerState) {
         let cols = (self.texture.width() / CHAR_WIDTH).floor() as usize;
-        let index = state.anim_id % cols;
-        let tx_x = index % cols;
-        let tx_y = index / cols;
-        draw_texture_ex(
-            self.texture,
-            state.position.x,
-            state.position.y,
-            WHITE,
-            DrawTextureParams {
-                source: Some(Rect::new(
-                    tx_x as f32 * CHAR_WIDTH,
-                    tx_y as f32 * CHAR_HEIGHT,
-                    CHAR_WIDTH,
-                    CHAR_HEIGHT,
-                )),
-                ..Default::default()
-            },
-        );
+        match &self.player_state {
+            PlayerState::InGame {
+                base,
+                online_state,
+                ingame,
+            } => {
+                let index = ingame.anim_id % cols;
+                let tx_x = index % cols;
+                let tx_y = index / cols;
+                draw_texture_ex(
+                    self.texture,
+                    ingame.position.x,
+                    ingame.position.y,
+                    WHITE,
+                    DrawTextureParams {
+                        source: Some(Rect::new(
+                            tx_x as f32 * CHAR_WIDTH,
+                            tx_y as f32 * CHAR_HEIGHT,
+                            CHAR_WIDTH,
+                            CHAR_HEIGHT,
+                        )),
+                        ..Default::default()
+                    },
+                );
 
-        egui_macroquad::ui(|egui_ctx| {
-            egui::Window::new("debug").show(egui_ctx, |ui| {
-                ui.label(&format!("Kills: {}", self.player_state.kills));
-            });
-        });
+                egui_macroquad::ui(|egui_ctx| {
+                    egui::Window::new("debug").show(egui_ctx, |ui| {
+                        ui.label(&format!("Kills: {}", ingame.kills));
+                    });
+                });
+            }
+            _ => todo!(),
+        }
 
         // Draw things before egui
 
@@ -290,10 +363,26 @@ async fn main() -> anyhow::Result<()> {
     let mut game = Game::new().await?;
     loop {
         if connection_coroutine.is_done() {
-            let state = ClientMessage::State {
-                kills: game.player_state.kills,
+            match &game.command {
+                Some(cmd) => match cmd {
+                    Command::Connect => match &game.player_state {
+                        PlayerState::Offline { base } => {
+                            let state = ClientMessage::Connect {
+                                name: base.name.clone(),
+                            };
+                            client_send(&state, &connection);
+                        }
+                        PlayerState::Online { base, online_state } => todo!(),
+                        PlayerState::InGame {
+                            base,
+                            online_state,
+                            ingame,
+                        } => todo!(),
+                    },
+                },
+                None => todo!(),
             };
-            client_send(&state, &connection);
+
             client_receive(&mut game, &connection);
 
             game.update();

@@ -45,6 +45,8 @@ pub enum ServerMessage {
         #[serde(rename = "i")]
         id: Uuid,
     },
+    #[serde(rename = "im")]
+    InvalidMessage,
     #[serde(rename = "j")]
     PlayerJoined {
         #[serde(rename = "i")]
@@ -62,10 +64,7 @@ pub enum ServerMessage {
         new_name: String,
     },
     #[serde(rename = "n")]
-    NameNotAvailable {
-        #[serde(rename = "n")]
-        name: String,
-    },
+    NameNotAvailable,
     #[serde(rename = "u")]
     Update {
         #[serde(rename = "s")]

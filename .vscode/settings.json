@@ -4,6 +4,7 @@
         "consts",
         "macroquad",
         "nonblocking",
+        "stakker",
         "tcpstream",
         "TICKRATE",
         "timestep",
