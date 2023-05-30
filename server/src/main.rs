@@ -67,7 +67,10 @@ async fn user_connected(ws: WebSocket, lobby: LocalActorRef<Lobby>) {
         log::debug!("user sent message: {:?}", msg);
         if let Some(msg) = parse_message(msg) {
             match msg {
-                ClientMessage::Connect { name } => player_name = name,
+                ClientMessage::Connect { name } => {
+                    player_name = name;
+                    break;
+                }
                 _ => {}
             }
         }

@@ -8,12 +8,13 @@ use glam::Vec2;
 use lazy_static::lazy_static;
 use macroquad::prelude::{
     clear_background, color_u8,
-    coroutines::{start_coroutine, wait_seconds},
+    coroutines::{start_coroutine, wait_seconds, Coroutine},
     draw_rectangle, draw_texture_ex, is_key_down, next_frame, screen_height, screen_width, Color,
     DrawTextureParams, KeyCode, Rect, Texture2D, BLACK, WHITE,
 };
+use serde::{Deserialize, Serialize};
 use shared::{deserialize, serialize, ClientMessage, ServerMessage, Uuid, SPEED};
-use std::{collections::HashMap, io, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, io, sync::Arc};
 use ws::Connection;
 
 const CHAR_WIDTH: f32 = 16.;
@@ -44,9 +45,10 @@ pub struct InGame {
     kills: usize,
 }
 
-#[derive(Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Base {
     name: String,
+    server: String,
 }
 
 #[derive(Clone)]
@@ -65,12 +67,22 @@ pub enum PlayerState {
     },
 }
 
+impl PlayerState {
+    fn base(&self) -> &Base {
+        match self {
+            PlayerState::Online { base, .. }
+            | PlayerState::InGame { base, .. }
+            | PlayerState::Offline { base } => base,
+        }
+    }
+}
+
 pub struct RemotePlayerState {
     name: String,
 }
 
 pub enum Command {
-    Connect,
+    Connect(String),
 }
 
 pub struct Game {
@@ -93,17 +105,29 @@ pub fn vec2_from_angle(angle: f32) -> Vec2 {
     Vec2::new(angle.cos(), angle.sin())
 }
 
+fn address_from_server(server: &str) -> String {
+    format!("ws://{}/game", server)
+}
+
 impl Game {
-    async fn new() -> anyhow::Result<Self> {
+    async fn new(address: Option<String>) -> anyhow::Result<Self> {
+        let config_path = std::path::PathBuf::from("settings.json");
+        let mut base = if config_path.exists() {
+            serde_json::from_str(&std::fs::read_to_string(config_path)?)?
+        } else {
+            Base::default()
+        };
+        if let Some(address) = address {
+            base.server = address;
+        }
+        if base.server.trim() == "" {
+            base.server = "localhost:3030".to_string()
+        }
         let texture =
             Texture2D::from_file_with_format(include_bytes!("../assets/8Bit Wizard.png"), None);
         let game = Self {
             command: None,
-            player_state: PlayerState::Offline {
-                base: Base {
-                    name: String::new(),
-                },
-            },
+            player_state: PlayerState::Offline { base },
             players: HashMap::new(),
             texture,
             quit: false,
@@ -116,7 +140,7 @@ impl Game {
             PlayerState::Offline { base } => match msg {
                 ServerMessage::Welcome { id } => Some(PlayerState::Online {
                     base: base.clone(),
-                    online_state: OnlineState { id },
+                    online_state: OnlineState { id: dbg!(id) },
                 }),
                 // ServerMessage::InvalidMessage => todo!(),
                 // ServerMessage::NameNotAvailable => todo!(),
@@ -157,6 +181,10 @@ impl Game {
                 ingame,
             } => todo!(),
         };
+
+        if let Some(state) = next_state {
+            self.player_state = state;
+        }
     }
 
     fn update(&mut self) {
@@ -251,9 +279,9 @@ impl Game {
         clippy::cast_sign_loss,
         clippy::cast_possible_truncation
     )]
-    pub fn draw_character(&self, state: &PlayerState) {
+    pub fn draw_state(&mut self) {
         let cols = (self.texture.width() / CHAR_WIDTH).floor() as usize;
-        match &self.player_state {
+        match &mut self.player_state {
             PlayerState::InGame {
                 base,
                 online_state,
@@ -284,7 +312,27 @@ impl Game {
                     });
                 });
             }
-            _ => todo!(),
+            PlayerState::Offline { base } => {
+                egui_macroquad::ui(|egui_ctx| {
+                    egui::Window::new("UI").show(egui_ctx, |ui| {
+                        ui.label("Username");
+                        ui.text_edit_singleline(&mut base.name);
+                        ui.label("Server");
+                        ui.text_edit_singleline(&mut base.server);
+                        if ui.button("Connect").clicked() {
+                            self.command = Some(Command::Connect(base.server.clone()));
+                        }
+                    });
+                });
+            }
+            PlayerState::Online { base, online_state } => {
+                egui_macroquad::ui(|egui_ctx| {
+                    egui::Window::new("UI").show(egui_ctx, |ui| {
+                        ui.text_edit_singleline(&mut base.name);
+                        if ui.button("Connect").clicked() {}
+                    });
+                });
+            }
         }
 
         // Draw things before egui
@@ -292,10 +340,9 @@ impl Game {
         egui_macroquad::draw();
     }
 
-    pub fn draw(&self) {
+    pub fn draw(&mut self) {
         clear_background(color_u8!(0, 211, 205, 205));
-        draw_box(Vec2::new(200f32, 200f32), Vec2::new(10f32, 10f32));
-        self.draw_character(&self.player_state);
+        self.draw_state();
     }
 }
 
@@ -307,7 +354,7 @@ pub async fn client_connect(connection: Arc<Connection>, url: String) {
     log::info!("Connection established successfully");
 }
 
-pub fn client_send(msg: &ClientMessage, connection: &Arc<Connection>) {
+pub fn client_send(game: &Game, msg: &ClientMessage, connection: &Arc<Connection>) {
     let bytes = serialize(&msg).expect("serialization failed");
     if let Err(err) = connection.send(bytes) {
         log::error!("Failed to send: {}", err);
@@ -315,14 +362,11 @@ pub fn client_send(msg: &ClientMessage, connection: &Arc<Connection>) {
             if let io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted = err.kind() {
                 log::error!("Connection lost, attempting to reconnect");
                 connection.restart();
-                let address = format!(
-                    "ws://{}/game",
-                    ARGS.address
-                        .clone()
-                        .unwrap_or_else(|| "localhost:3030".to_string())
-                );
 
-                start_coroutine(client_connect(connection.clone(), address));
+                start_coroutine(client_connect(
+                    connection.clone(),
+                    address_from_server(&game.player_state.base().server),
+                ));
             }
         }
     }
@@ -341,54 +385,60 @@ struct Arguments {
     address: Option<String>,
 }
 
-lazy_static! {
-    /// This is an example for using doc comment attributes
-    static ref ARGS: Arguments = Arguments::parse();
-}
-
 #[macroquad::main("game")]
 async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
 
     let args = Arguments::parse();
 
-    let address = format!(
-        "ws://{}/game",
-        args.address.unwrap_or_else(|| "localhost:3030".to_string())
-    );
-
     let connection = Arc::new(Connection::new());
-    let connection_coroutine = start_coroutine(client_connect(connection.clone(), address));
 
-    let mut game = Game::new().await?;
+    let mut game = Game::new(args.address).await?;
+    let mut is_online = false;
     loop {
-        if connection_coroutine.is_done() {
-            match &game.command {
-                Some(cmd) => match cmd {
-                    Command::Connect => match &game.player_state {
-                        PlayerState::Offline { base } => {
-                            let state = ClientMessage::Connect {
-                                name: base.name.clone(),
-                            };
-                            client_send(&state, &connection);
-                        }
-                        PlayerState::Online { base, online_state } => todo!(),
-                        PlayerState::InGame {
-                            base,
-                            online_state,
-                            ingame,
-                        } => todo!(),
-                    },
+        let next_state = match &game.command {
+            Some(cmd) => match cmd {
+                Command::Connect(address) => match &game.player_state {
+                    PlayerState::Offline { base } => {
+                        let connection_coroutine =
+                            start_coroutine(client_connect(connection.clone(), address.to_owned()));
+
+                        while !connection_coroutine.is_done() {}
+                        is_online = true;
+                        let state = ClientMessage::Connect {
+                            name: base.name.clone(),
+                        };
+                        client_send(&game, &state, &connection);
+                        None
+                    }
+                    PlayerState::Online { base, online_state } => todo!(),
+                    PlayerState::InGame {
+                        base,
+                        online_state,
+                        ingame,
+                    } => todo!(),
                 },
-                None => todo!(),
-            };
+            },
+            None => None,
+        };
+        game.command = None;
 
-            client_receive(&mut game, &connection);
-
-            game.update();
-            game.draw();
+        if let Some(state) = next_state {
+            game.player_state = state;
         }
+
+        if is_online {
+            client_receive(&mut game, &connection);
+        }
+
+        game.update();
+        game.draw();
+
         if game.quit {
+            std::fs::write(
+                "settings.json",
+                serde_json::to_string_pretty(game.player_state.base())?,
+            )?;
             return Ok(());
         }
         next_frame().await;

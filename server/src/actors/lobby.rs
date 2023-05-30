@@ -61,7 +61,7 @@ async fn user_message(msg: ClientMessage, id: Uuid, game_server: &mut GameServer
         ClientMessage::Connect { name } => {
             let msg = ServerMessage::PlayerJoined { id, name };
             for user in game_server.users.values() {
-                send_msg(&user.tx, &msg);
+                send_msg(&user.tx, dbg!(&msg));
             }
         }
         ClientMessage::ChangeName { name } => {
