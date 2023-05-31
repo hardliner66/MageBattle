@@ -5,7 +5,9 @@ use std::net::SocketAddr;
 use actors::Lobby;
 use clap::Parser;
 use coerce::actor::{new_actor, LocalActorRef};
-use shared::{deserialize, serialize, ClientMessage, ServerMessage, Uuid};
+use shared::{
+    deserialize, enable_logging, serialize, ClientMessage, ModuleLogLevels, ServerMessage, Uuid,
+};
 use tokio::sync::mpsc;
 use warp::{
     ws::{Message, WebSocket},
@@ -104,6 +106,15 @@ async fn user_connected(ws: WebSocket, lobby: LocalActorRef<Lobby>) {
                 }
             }
         }
+        log::debug!(
+            "Send user disconnect: {:?}",
+            lobby
+                .send(ClientMessageWrapper {
+                    id,
+                    msg: ClientMessage::Disconnect { uid: id }
+                })
+                .await
+        );
         log::debug!("user disconnected: {}", id);
     } else {
         send_msg(&tx, &ServerMessage::NameNotAvailable);
@@ -136,7 +147,12 @@ struct Arguments {
 #[tokio::main]
 #[allow(clippy::similar_names)]
 async fn main() -> anyhow::Result<()> {
-    pretty_env_logger::init();
+    enable_logging(
+        "server",
+        ModuleLogLevels {
+            ..Default::default()
+        },
+    )?;
 
     let args = Arguments::parse();
 

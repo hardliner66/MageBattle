@@ -35,12 +35,36 @@ impl Handler<NewUser> for Lobby {
             .game_server
             .users
             .iter()
-            .find(|(key, user)| user.name == new_user.name)
+            .find(|(_, user)| user.name == new_user.name)
         {
             Err(new_user)
         } else {
             let id = Uuid::new_v4();
-            self.game_server.users.insert(id, new_user);
+            self.game_server.users.insert(id, new_user.clone());
+
+            let msg = ServerMessage::PlayerJoined {
+                id,
+                name: new_user.name.clone(),
+            };
+            for user in self.game_server.users.values() {
+                send_msg(&user.tx, &msg);
+            }
+            if let Some((uid, user)) = self
+                .game_server
+                .users
+                .iter()
+                .find(|(_, user)| user.name.to_lowercase() == new_user.name.to_lowercase())
+            {
+                for (other_uid, other_user) in self.game_server.users.iter() {
+                    if uid != other_uid {
+                        let msg = ServerMessage::PlayerJoined {
+                            id: other_uid.clone(),
+                            name: other_user.name.clone(),
+                        };
+                        send_msg(&user.tx, &msg);
+                    }
+                }
+            }
 
             Ok(id)
         }
@@ -58,13 +82,21 @@ impl ActorMessage for ClientMessageWrapper {
 
 async fn user_message(msg: ClientMessage, id: Uuid, game_server: &mut GameServerState) {
     match msg {
-        ClientMessage::Connect { name } => {
-            let msg = ServerMessage::PlayerJoined { id, name };
-            for user in game_server.users.values() {
-                send_msg(&user.tx, dbg!(&msg));
+        ClientMessage::Connect { .. } => {}
+        ClientMessage::GetPlayers => {
+            if let Some((uid, user)) = game_server.users.iter().find(|(uid2, _)| id == **uid2) {
+                for (other_uid, other_user) in game_server.users.iter() {
+                    if uid != other_uid {
+                        let msg = ServerMessage::PlayerJoined {
+                            id: other_uid.clone(),
+                            name: other_user.name.clone(),
+                        };
+                        send_msg(&user.tx, &msg);
+                    }
+                }
             }
         }
-        ClientMessage::ChangeName { name } => {
+        ClientMessage::ChangeName { uid: _, name } => {
             if game_server
                 .users
                 .iter()
@@ -82,7 +114,7 @@ async fn user_message(msg: ClientMessage, id: Uuid, game_server: &mut GameServer
                 .await;
             }
         }
-        ClientMessage::ChallengePlayer { name } => {
+        ClientMessage::ChallengePlayer { uid: _, name } => {
             if let Some((_, player)) = game_server
                 .users
                 .iter()
@@ -99,9 +131,18 @@ async fn user_message(msg: ClientMessage, id: Uuid, game_server: &mut GameServer
                 send_msg(&player.tx, &ServerMessage::RequestReceived { request_id });
             }
         }
-        ClientMessage::AcceptChallenge { request_id } => todo!(),
-        ClientMessage::DenyChallenge { request_id } => todo!(),
-        ClientMessage::State { kills } => todo!(),
+        ClientMessage::AcceptChallenge {
+            uid: _,
+            request_id: _,
+        } => todo!(),
+        ClientMessage::DenyChallenge {
+            uid: _,
+            request_id: _,
+        } => todo!(),
+        ClientMessage::State { uid: _, kills: _ } => todo!(),
+        ClientMessage::Disconnect { uid } => {
+            game_server.users.remove(&uid);
+        }
     }
 }
 

@@ -5,16 +5,18 @@ mod ws;
 
 use clap::Parser;
 use glam::Vec2;
-use lazy_static::lazy_static;
 use macroquad::prelude::{
     clear_background, color_u8,
-    coroutines::{start_coroutine, wait_seconds, Coroutine},
+    coroutines::{start_coroutine, wait_seconds},
     draw_rectangle, draw_texture_ex, is_key_down, next_frame, screen_height, screen_width, Color,
     DrawTextureParams, KeyCode, Rect, Texture2D, BLACK, WHITE,
 };
 use serde::{Deserialize, Serialize};
-use shared::{deserialize, serialize, ClientMessage, ServerMessage, Uuid, SPEED};
-use std::{cell::RefCell, collections::HashMap, io, sync::Arc};
+use shared::{
+    deserialize, enable_logging, serialize, ClientMessage, ModuleLogLevels, ServerMessage, Uuid,
+    SPEED,
+};
+use std::{collections::HashMap, io, sync::Arc};
 use ws::Connection;
 
 const CHAR_WIDTH: f32 = 16.;
@@ -32,12 +34,12 @@ pub enum Direction {
     UpLeft,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct OnlineState {
     pub id: Uuid,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct InGame {
     seed: u64,
     anim_id: usize,
@@ -45,15 +47,18 @@ pub struct InGame {
     kills: usize,
 }
 
-#[derive(Serialize, Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Base {
     name: String,
     server: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PlayerState {
     Offline {
+        base: Base,
+    },
+    Connected {
         base: Base,
     },
     Online {
@@ -71,20 +76,34 @@ impl PlayerState {
     fn base(&self) -> &Base {
         match self {
             PlayerState::Online { base, .. }
+            | PlayerState::Connected { base, .. }
             | PlayerState::InGame { base, .. }
             | PlayerState::Offline { base } => base,
         }
     }
+
+    fn is_online(&self) -> bool {
+        match self {
+            PlayerState::Online { .. }
+            | PlayerState::InGame { .. }
+            | PlayerState::Connected { .. } => true,
+            PlayerState::Offline { .. } => false,
+        }
+    }
 }
 
+#[derive(Debug)]
 pub struct RemotePlayerState {
     name: String,
 }
 
+#[derive(Debug)]
 pub enum Command {
-    Connect(String),
+    Connect,
+    GetPlayers,
 }
 
+#[derive(Debug)]
 pub struct Game {
     pub command: Option<Command>,
     pub player_state: PlayerState,
@@ -136,12 +155,17 @@ impl Game {
     }
 
     pub fn handle_message(&mut self, msg: ServerMessage) {
+        let msg = dbg!(msg);
         let next_state = match &mut self.player_state {
-            PlayerState::Offline { base } => match msg {
-                ServerMessage::Welcome { id } => Some(PlayerState::Online {
-                    base: base.clone(),
-                    online_state: OnlineState { id: dbg!(id) },
-                }),
+            PlayerState::Offline { .. } => None,
+            PlayerState::Connected { base } => match msg {
+                ServerMessage::Welcome { id } => {
+                    self.command = Some(Command::GetPlayers);
+                    Some(PlayerState::Online {
+                        base: base.clone(),
+                        online_state: OnlineState { id },
+                    })
+                }
                 // ServerMessage::InvalidMessage => todo!(),
                 // ServerMessage::NameNotAvailable => todo!(),
                 _ => None,
@@ -166,24 +190,27 @@ impl Game {
                     None
                 }
                 ServerMessage::PlayerJoined { id, name } => {
-                    self.players.insert(id, RemotePlayerState { name });
+                    self.players.insert(dbg!(id), RemotePlayerState { name });
                     None
                 }
-                ServerMessage::ChallengeReceived { request_id, name } => todo!(),
-                ServerMessage::ChallengeDenied { request_id } => todo!(),
-                ServerMessage::RequestReceived { request_id } => todo!(),
+                ServerMessage::ChallengeReceived {
+                    request_id: _,
+                    name: _,
+                } => todo!(),
+                ServerMessage::ChallengeDenied { request_id: _ } => todo!(),
+                ServerMessage::RequestReceived { request_id: _ } => todo!(),
                 ServerMessage::InvalidMessage => todo!(),
                 _ => None,
             },
             PlayerState::InGame {
-                base,
-                online_state,
-                ingame,
+                base: _,
+                online_state: _,
+                ingame: _,
             } => todo!(),
         };
 
         if let Some(state) = next_state {
-            self.player_state = state;
+            self.player_state = dbg!(state);
         }
     }
 
@@ -194,11 +221,15 @@ impl Game {
 
         if is_key_down(KeyCode::Space) {
             match &mut self.player_state {
-                PlayerState::Offline { base } => todo!(),
-                PlayerState::Online { base, online_state } => todo!(),
+                PlayerState::Offline { base: _ } => (),
+                PlayerState::Connected { base: _ } => (),
+                PlayerState::Online {
+                    base: _,
+                    online_state: _,
+                } => (),
                 PlayerState::InGame {
-                    base,
-                    online_state,
+                    base: _,
+                    online_state: _,
                     ingame,
                 } => ingame.kills += 1,
             }
@@ -230,8 +261,8 @@ impl Game {
         };
 
         if let PlayerState::InGame {
-            base,
-            online_state,
+            base: _,
+            online_state: _,
             ingame,
         } = &mut self.player_state
         {
@@ -283,8 +314,8 @@ impl Game {
         let cols = (self.texture.width() / CHAR_WIDTH).floor() as usize;
         match &mut self.player_state {
             PlayerState::InGame {
-                base,
-                online_state,
+                base: _,
+                online_state: _,
                 ingame,
             } => {
                 let index = ingame.anim_id % cols;
@@ -320,16 +351,28 @@ impl Game {
                         ui.label("Server");
                         ui.text_edit_singleline(&mut base.server);
                         if ui.button("Connect").clicked() {
-                            self.command = Some(Command::Connect(base.server.clone()));
+                            self.command = Some(Command::Connect);
                         }
                     });
                 });
             }
-            PlayerState::Online { base, online_state } => {
+            PlayerState::Connected { .. } => {
                 egui_macroquad::ui(|egui_ctx| {
                     egui::Window::new("UI").show(egui_ctx, |ui| {
-                        ui.text_edit_singleline(&mut base.name);
-                        if ui.button("Connect").clicked() {}
+                        ui.label("Connecting...");
+                    });
+                });
+            }
+            PlayerState::Online {
+                base: _,
+                online_state: _,
+            } => {
+                egui_macroquad::ui(|egui_ctx| {
+                    egui::Window::new("UI").show(egui_ctx, |ui| {
+                        ui.label("Users:");
+                        for player in &self.players {
+                            ui.label(&player.1.name);
+                        }
                     });
                 });
             }
@@ -387,35 +430,52 @@ struct Arguments {
 
 #[macroquad::main("game")]
 async fn main() -> anyhow::Result<()> {
-    pretty_env_logger::init();
+    enable_logging(
+        "game",
+        ModuleLogLevels {
+            ..Default::default()
+        },
+    )?;
 
     let args = Arguments::parse();
 
     let connection = Arc::new(Connection::new());
 
     let mut game = Game::new(args.address).await?;
-    let mut is_online = false;
     loop {
         let next_state = match &game.command {
             Some(cmd) => match cmd {
-                Command::Connect(address) => match &game.player_state {
+                Command::GetPlayers => {
+                    client_send(&game, &ClientMessage::GetPlayers, &connection);
+                    None
+                }
+                Command::Connect => match &game.player_state {
                     PlayerState::Offline { base } => {
-                        let connection_coroutine =
-                            start_coroutine(client_connect(connection.clone(), address.to_owned()));
+                        let mut connection_coroutine = start_coroutine(client_connect(
+                            connection.clone(),
+                            address_from_server(&base.server),
+                        ));
+                        connection_coroutine.set_manual_poll();
 
-                        while !connection_coroutine.is_done() {}
-                        is_online = true;
+                        while !connection_coroutine.is_done() {
+                            wait_seconds(1.0).await;
+                            connection_coroutine.poll(1.0);
+                        }
                         let state = ClientMessage::Connect {
                             name: base.name.clone(),
                         };
                         client_send(&game, &state, &connection);
-                        None
+                        Some(PlayerState::Connected { base: base.clone() })
                     }
-                    PlayerState::Online { base, online_state } => todo!(),
+                    PlayerState::Connected { .. } => None,
+                    PlayerState::Online {
+                        base: _,
+                        online_state: _,
+                    } => todo!(),
                     PlayerState::InGame {
-                        base,
-                        online_state,
-                        ingame,
+                        base: _,
+                        online_state: _,
+                        ingame: _,
                     } => todo!(),
                 },
             },
@@ -424,10 +484,10 @@ async fn main() -> anyhow::Result<()> {
         game.command = None;
 
         if let Some(state) = next_state {
-            game.player_state = state;
+            game.player_state = dbg!(state);
         }
 
-        if is_online {
+        if game.player_state.is_online() {
             client_receive(&mut game, &connection);
         }
 
